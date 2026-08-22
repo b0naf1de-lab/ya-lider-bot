@@ -321,9 +321,9 @@ async def process_screenshot(message: Message, state: FSMContext):
             photo=photo_id,
             caption=(
                 f"💳 Новая оплата от {user_info}\n\n"
-                f"Родитель: {user[3] if user else '—'}\n"
-                f"Телефон: {user[4] if user else '—'}\n"
-                f"Ребёнок: {user[5] if user else '—'} ({user[6] if user else '—'} лет)\n"
+                f"Родитель: {user[2] if user else '—'}\n"
+                f"Телефон: {user[3] if user else '—'}\n"
+                f"Ребёнок: {user[5] if user else '—'} лет\n"
                 f"{consent_status}"
             ),
             reply_markup=admin_approve_kb(message.from_user.id),
