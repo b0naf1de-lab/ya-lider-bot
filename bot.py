@@ -6,6 +6,7 @@ from datetime import datetime
 from contextlib import closing
 
 from aiogram import Bot, Dispatcher, F
+from aiogram.client.default import DefaultBotProperties
 from aiogram.types import (
     Message, CallbackQuery,
     ReplyKeyboardMarkup, KeyboardButton,
@@ -18,17 +19,19 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 # ─── CONFIG ────────────────────────────────────────────────────
 BOT_TOKEN = os.getenv("BOT_TOKEN", "ЗАМЕНИ_НА_ТОКЕН_ОТ_BOTFATHER")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))          # Telegram ID админа
+# Список админов: через запятую, например: 123456789,987654321
+_ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", os.getenv("ADMIN_ID", "0"))
+ADMIN_IDS = [int(x.strip()) for x in _ADMIN_IDS_RAW.split(",") if x.strip().isdigit()]
 CHANNEL_ID = os.getenv("CHANNEL_ID", "0")           # ID закрытого канала/группы
 
 if BOT_TOKEN == "ЗАМЕНИ_НА_ТОКЕН_ОТ_BOTFATHER":
     raise ValueError("Укажи BOT_TOKEN в переменных окружения или прямо в коде!")
-if ADMIN_ID == 0:
-    raise ValueError("Укажи ADMIN_ID (твой Telegram ID)!")
+if not ADMIN_IDS:
+    raise ValueError("Укажи ADMIN_ID или ADMIN_IDS (Telegram ID админов через запятую)!")
 
 logging.basicConfig(level=logging.INFO)
 
-bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
 
 # ─── DATABASE ──────────────────────────────────────────────────
@@ -264,11 +267,11 @@ async def finish_lead(message: Message, state: FSMContext):
         reply_markup=payment_kb(),
     )
 
-    # Уведомляем админа
-    if ADMIN_ID:
-        consent_text = "✅ Согласен на получение сообщений" if consent else "❌ Не согласен на получение сообщений"
+    # Уведомляем админов
+    consent_text = "✅ Согласен на получение сообщений" if consent else "❌ Не согласен на получение сообщений"
+    for admin_id in ADMIN_IDS:
         await bot.send_message(
-            ADMIN_ID,
+            admin_id,
             f"📥 Новая заявка!\n\n"
             f"Родитель: {data.get('parent_name', '')}\n"
             f"Телефон: {data.get('phone', '')}\n"
@@ -309,12 +312,12 @@ async def process_screenshot(message: Message, state: FSMContext):
         reply_markup=main_menu_kb(),
     )
 
-    # Уведомляем админа
-    if ADMIN_ID:
-        user_info = f"@{message.from_user.username}" if message.from_user.username else f"ID {message.from_user.id}"
-        consent_status = f"Получение сообщений: {'ДА' if user and user[6] else 'НЕТ'}" if user else ""
+    # Уведомляем админов
+    user_info = f"@{message.from_user.username}" if message.from_user.username else f"ID {message.from_user.id}"
+    consent_status = f"Получение сообщений: {'ДА' if user and user[6] else 'НЕТ'}" if user else ""
+    for admin_id in ADMIN_IDS:
         await bot.send_photo(
-            ADMIN_ID,
+            admin_id,
             photo=photo_id,
             caption=(
                 f"💳 Новая оплата от {user_info}\n\n"
@@ -371,9 +374,9 @@ async def handle_unsubscribe(message: Message):
             "Если передумаешь — просто оставь заявку снова через /start и нажми «Да, согласен»."
         )
 
-        if ADMIN_ID:
+        for admin_id in ADMIN_IDS:
             await bot.send_message(
-                ADMIN_ID,
+                admin_id,
                 f"🔕 Пользователь отписался от сообщений:\n\n"
                 f"Имя: {user[3]}\n"
                 f"Телефон: {user[4]}\n"
@@ -387,7 +390,7 @@ async def handle_unsubscribe(message: Message):
 # ─── ADMIN ACTIONS ─────────────────────────────────────────────
 @dp.callback_query(F.data.startswith("approve:"))
 async def cb_approve(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
+    if callback.from_user.id not in ADMIN_IDS:
         await callback.answer("Нет доступа", show_alert=True)
         return
 
@@ -423,7 +426,7 @@ async def cb_approve(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("reject:"))
 async def cb_reject(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
+    if callback.from_user.id not in ADMIN_IDS:
         await callback.answer("Нет доступа", show_alert=True)
         return
 
@@ -443,7 +446,7 @@ async def cb_reject(callback: CallbackQuery):
 # ─── ADMIN COMMANDS ────────────────────────────────────────────
 @dp.message(Command("stats"))
 async def cmd_stats(message: Message):
-    if message.from_user.id != ADMIN_ID:
+    if message.from_user.id not in ADMIN_IDS:
         return
 
     with closing(sqlite3.connect(DB_PATH)) as conn:
