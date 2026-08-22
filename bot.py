@@ -28,7 +28,7 @@ if ADMIN_ID == 0:
 
 logging.basicConfig(level=logging.INFO)
 
-bot = Bot(token=BOT_TOKEN)
+bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
 dp = Dispatcher(storage=MemoryStorage())
 
 # ─── DATABASE ──────────────────────────────────────────────────
