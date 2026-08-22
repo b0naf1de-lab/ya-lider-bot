@@ -46,6 +46,7 @@ def init_db():
                 phone TEXT,
                 child_name TEXT,
                 child_age INTEGER,
+                marketing_consent INTEGER DEFAULT 0,
                 status TEXT DEFAULT 'new',
                 created_at TEXT
             )
@@ -62,14 +63,14 @@ def init_db():
         conn.commit()
 
 
-def save_user(user_id, username, full_name, phone, child_name, child_age):
+def save_user(user_id, username, full_name, phone, child_name, child_age, marketing_consent=0):
     with closing(sqlite3.connect(DB_PATH)) as conn:
         c = conn.cursor()
         c.execute("""
             INSERT OR REPLACE INTO users
-            (user_id, username, full_name, phone, child_name, child_age, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, 'lead', ?)
-        """, (user_id, username, full_name, phone, child_name, child_age, datetime.now().isoformat()))
+            (user_id, username, full_name, phone, child_name, child_age, marketing_consent, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'lead', ?)
+        """, (user_id, username, full_name, phone, child_name, child_age, marketing_consent, datetime.now().isoformat()))
         conn.commit()
 
 
@@ -96,6 +97,13 @@ def share_phone_kb():
     )
 
 
+def marketing_consent_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да, согласен", callback_data="consent:yes")],
+        [InlineKeyboardButton(text="❌ Нет, не согласен", callback_data="consent:no")],
+    ])
+
+
 def payment_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Я оплатил", callback_data="pay")],
@@ -118,6 +126,7 @@ class LeadForm(StatesGroup):
     phone = State()
     child_name = State()
     child_age = State()
+    marketing_consent = State()
 
 
 class PaymentForm(StatesGroup):
@@ -183,24 +192,58 @@ async def process_child_age(message: Message, state: FSMContext):
         return
 
     age = int(message.text)
+    await state.update_data(child_age=age)
+    await state.set_state(LeadForm.marketing_consent)
+
+    consent_text = (
+        "📬 <b>Согласие на получение информации</b>\n\n"
+        "Мы можем присылать тебе полезные материалы, напоминания о занятиях и информацию о новых наборах «Я — Лидер».\n\n"
+        "• Каналы: Telegram, WhatsApp, SMS, звонки\n"
+        "• Темы: новые курсы, акции, расписание, полезные статьи\n"
+        "• Отказаться можно в любой момент — просто напиши «Отписаться»\n\n"
+        "<b>Ты согласен?</b>"
+    )
+    await message.answer(consent_text, reply_markup=marketing_consent_kb())
+
+
+@dp.callback_query(F.data == "consent:yes")
+async def cb_consent_yes(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(marketing_consent=1)
+    await callback.message.edit_text("✅ Отлично! Записали.")
+    await callback.answer()
+    await finish_lead(callback.message, state)
+
+
+@dp.callback_query(F.data == "consent:no")
+async def cb_consent_no(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(marketing_consent=0)
+    await callback.message.edit_text("Понял, будем связываться только по текущей заявке.")
+    await callback.answer()
+    await finish_lead(callback.message, state)
+
+
+async def finish_lead(message: Message, state: FSMContext):
     data = await state.get_data()
+    age = data.get("child_age", 0)
+    consent = data.get("marketing_consent", 0)
 
     save_user(
-        user_id=message.from_user.id,
-        username=message.from_user.username,
-        full_name=data["parent_name"],
-        phone=data["phone"],
-        child_name=data["child_name"],
+        user_id=message.chat.id,
+        username=message.chat.username,
+        full_name=data.get("parent_name", ""),
+        phone=data.get("phone", ""),
+        child_name=data.get("child_name", ""),
         child_age=age,
+        marketing_consent=consent,
     )
 
     await state.clear()
 
     text = (
-        f"🎉 Спасибо, {data['parent_name']}!\n\n"
+        f"🎉 Спасибо, {data.get('parent_name', '')}!\n\n"
         f"Заявка принята:\n"
-        f"• Ребёнок: {data['child_name']}, {age} лет\n"
-        f"• Телефон: {data['phone']}\n\n"
+        f"• Ребёнок: {data.get('child_name', '')}, {age} лет\n"
+        f"• Телефон: {data.get('phone', '')}\n\n"
         "Стоимость курса: уточняй у менеджера.\n"
         "После оплаты ты получишь доступ к закрытому каналу с материалами."
     )
@@ -212,14 +255,16 @@ async def process_child_age(message: Message, state: FSMContext):
 
     # Уведомляем админа
     if ADMIN_ID:
+        consent_text = "✅ Согласен на получение сообщений" if consent else "❌ Не согласен на получение сообщений"
         await bot.send_message(
             ADMIN_ID,
             f"📥 Новая заявка!\n\n"
-            f"Родитель: {data['parent_name']}\n"
-            f"Телефон: {data['phone']}\n"
-            f"Ребёнок: {data['child_name']}, {age} лет\n"
-            f"Telegram: @{message.from_user.username or 'нет'}\n"
-            f"ID: {message.from_user.id}",
+            f"Родитель: {data.get('parent_name', '')}\n"
+            f"Телефон: {data.get('phone', '')}\n"
+            f"Ребёнок: {data.get('child_name', '')}, {age} лет\n"
+            f"Telegram: @{message.chat.username or 'нет'}\n"
+            f"ID: {message.chat.id}\n\n"
+            f"{consent_text}",
         )
 
 
@@ -256,6 +301,7 @@ async def process_screenshot(message: Message, state: FSMContext):
     # Уведомляем админа
     if ADMIN_ID:
         user_info = f"@{message.from_user.username}" if message.from_user.username else f"ID {message.from_user.id}"
+        consent_status = f"Получение сообщений: {'ДА' if user and user[6] else 'НЕТ'}" if user else ""
         await bot.send_photo(
             ADMIN_ID,
             photo=photo_id,
@@ -263,7 +309,8 @@ async def process_screenshot(message: Message, state: FSMContext):
                 f"💳 Новая оплата от {user_info}\n\n"
                 f"Родитель: {user[3] if user else '—'}\n"
                 f"Телефон: {user[4] if user else '—'}\n"
-                f"Ребёнок: {user[5] if user else '—'} ({user[6] if user else '—'} лет)"
+                f"Ребёнок: {user[5] if user else '—'} ({user[6] if user else '—'} лет)\n"
+                f"{consent_status}"
             ),
             reply_markup=admin_approve_kb(message.from_user.id),
         )
@@ -342,11 +389,14 @@ async def cmd_stats(message: Message):
         rows = c.fetchall()
         c.execute("SELECT COUNT(*) FROM payments WHERE status='pending'")
         pending = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM users WHERE marketing_consent=1")
+        marketing = c.fetchone()[0]
 
     stats_text = "📊 Статистика:\n\n"
     for cnt, st in rows:
         stats_text += f"• {st}: {cnt}\n"
     stats_text += f"\n⏳ Ожидают проверки оплаты: {pending}"
+    stats_text += f"\n📬 Согласны на получение сообщений: {marketing}"
     await message.answer(stats_text)
 
 
