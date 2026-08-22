@@ -81,6 +81,17 @@ def get_user(user_id):
         return c.fetchone()
 
 
+def update_marketing_consent(user_id, consent_value):
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        c = conn.cursor()
+        c.execute(
+            "UPDATE users SET marketing_consent=? WHERE user_id=?",
+            (consent_value, user_id),
+        )
+        conn.commit()
+        return c.rowcount
+
+
 # ─── KEYBOARDS ─────────────────────────────────────────────────
 def main_menu_kb():
     return ReplyKeyboardMarkup(
@@ -319,6 +330,58 @@ async def process_screenshot(message: Message, state: FSMContext):
 @dp.message(PaymentForm.screenshot)
 async def process_screenshot_invalid(message: Message):
     await message.answer("Пожалуйста, отправь фото (скриншот оплаты).")
+
+
+# ─── UNSUBSCRIBE ───────────────────────────────────────────────
+UNSUBSCRIBE_WORDS = {"отписаться", "отписка", "стоп", "не пишите", "не пиши", "отменить", "отказаться"}
+
+
+@dp.message(Command("unsubscribe"))
+async def cmd_unsubscribe(message: Message):
+    await handle_unsubscribe(message)
+
+
+@dp.message(F.text.lower().in_(UNSUBSCRIBE_WORDS))
+async def text_unsubscribe(message: Message):
+    await handle_unsubscribe(message)
+
+
+async def handle_unsubscribe(message: Message):
+    user = get_user(message.from_user.id)
+
+    if not user:
+        await message.answer(
+            "Ты ещё не оставлял заявку в нашем боте.\n\n"
+            "Если хочешь записаться на курс — нажми /start"
+        )
+        return
+
+    if user[6] == 0:
+        await message.answer(
+            "✅ Ты уже отписан от сообщений. Мы не присылаем тебе ничего, кроме ответов по твоей заявке."
+        )
+        return
+
+    rows = update_marketing_consent(message.from_user.id, 0)
+
+    if rows > 0:
+        await message.answer(
+            "✅ Ты успешно отписан.\n\n"
+            "Больше не будем присылать сообщения о курсах, акциях и новых наборах.\n\n"
+            "Если передумаешь — просто оставь заявку снова через /start и нажми «Да, согласен»."
+        )
+
+        if ADMIN_ID:
+            await bot.send_message(
+                ADMIN_ID,
+                f"🔕 Пользователь отписался от сообщений:\n\n"
+                f"Имя: {user[3]}\n"
+                f"Телефон: {user[4]}\n"
+                f"Telegram: @{message.from_user.username or 'нет'}\n"
+                f"ID: {message.from_user.id}",
+            )
+    else:
+        await message.answer("Что-то пошло не так. Напиши менеджеру напрямую — он отпишет вручную.")
 
 
 # ─── ADMIN ACTIONS ─────────────────────────────────────────────
