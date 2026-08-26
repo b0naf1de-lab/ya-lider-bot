@@ -16,6 +16,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiohttp import web
 
 # ─── CONFIG ────────────────────────────────────────────────────
 BOT_TOKEN = os.getenv("BOT_TOKEN", "ЗАМЕНИ_НА_ТОКЕН_ОТ_BOTFATHER")
@@ -466,9 +467,25 @@ async def cmd_stats(message: Message):
     await message.answer(stats_text)
 
 
+# ─── WEB SERVER FOR RENDER ─────────────────────────────────────
+async def health(request):
+    return web.Response(text="Bot is running")
+
+app = web.Application()
+app.router.add_get("/", health)
+
+async def start_web_server():
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"Web server started on port {port}")
+
 # ─── MAIN ──────────────────────────────────────────────────────
 async def main():
     init_db()
+    await start_web_server()
     await dp.start_polling(bot)
 
 
