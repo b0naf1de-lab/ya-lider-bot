@@ -1037,9 +1037,28 @@ async def reminder_worker():
 
 
 # ─── MAIN ──────────────────────────────────────────────────────
+async def health_server():
+    """Заглушка для Render: бот не открывает порт, а Render требует порт
+    для проверки живости. Поднимаем мини-HTTP-сервер на PORT."""
+    from aiohttp import web
+
+    async def ok(request):
+        return web.Response(text="ya-lider-bot is running")
+
+    app = web.Application()
+    app.router.add_get("/", ok)
+    port = int(os.getenv("PORT", "10000"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logging.info(f"Health server on port {port}")
+
+
 async def main():
     init_db()
     asyncio.create_task(reminder_worker())
+    asyncio.create_task(health_server())
     await dp.start_polling(bot)
 
 
