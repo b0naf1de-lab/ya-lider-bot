@@ -277,6 +277,14 @@ def miss_reason_kb(user_id: int):
     ])
 
 
+def admin_call_kb(user_id: int, parent_name: str = "", phone: str = ""):
+    """Кнопка «Созвон состоялся» под уведомлением админам.
+    В callback только user_id (лимит 64 символа) — имя и телефон берём из базы."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Созвон состоялся", callback_data=f"calldone:{user_id}")],
+    ])
+
+
 def after_lesson_kb(user_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💬 Хочу разбор ребёнка", callback_data=f"next:1:{user_id}")],
@@ -393,13 +401,16 @@ def trigger_of(text: str):
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     text = (
-        "👋 Привет! Я бот «Я — Лидер» — курсы по развитию лидерских качеств для детей 6–16 лет.\n\n"
-        "Напиши мне кодовое слово — и я сразу начну:\n"
-        "• <b>ЛИДЕР</b> — тест лидерских качеств\n"
-        "• <b>ТЕСТ</b> — тест самостоятельности\n"
-        "• <b>ДИАГНОСТИКА</b> — диагностика от психолога\n"
-        "• <b>ЗАНЯТИЕ</b> — пробное занятие\n\n"
-        "Или нажми кнопку ниже, чтобы оставить заявку 👇"
+        "👋 <b>Привет! Я — бот курсов развития «Я — Лидер»</b>\n\n"
+        "Онлайн-занятия для детей 6–16 лет, где ребёнок учится быть уверенным "
+        "в себе, договариваться, выступать публично и не бояться ошибок. "
+        "Ведёт психолог со стажем 17+ лет, Екатерина Грибина.\n\n"
+        "<b>Выберите, с чего начать — просто напишите слово:</b>\n\n"
+        "🧭 <b>ЛИДЕР</b> — тест лидерских качеств вашего ребёнка (7 вопросов, 3 минуты)\n"
+        "🔍 <b>ТЕСТ</b> — насколько ребёнок самостоятелен без ваших подсказок (5 вопросов)\n"
+        "🩺 <b>ДИАГНОСТИКА</b> — заявка на разбор от психолога: что развивать именно вашему ребёнку\n"
+        "🚀 <b>ЗАНЯТИЕ</b> — записаться на бесплатное пробное занятие\n\n"
+        "А если уже всё знаете и хотите записаться — нажмите кнопку ниже 👇"
     )
     await message.answer(text, reply_markup=main_menu_kb())
 
@@ -411,13 +422,49 @@ async def funnel_entry(message: Message, state: FSMContext):
     if not word:
         raise SkipHandler()  # не кодовое слово — отдаём другим хендлерам
     if await state.get_state():
-        return  # человек внутри сценария — не перебиваем
+        # человек внутри сценария — предлагаем перезапуск кнопками
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text=f"🔁 Начать «{word}» заново",
+                                 callback_data=f"restart:{word}"),
+            InlineKeyboardButton(text="▶️ Продолжить заявку",
+                                 callback_data="fcontinue"),
+        ]])
+        await message.answer(
+            "Вы сейчас в процессе заявки. Слово «{0}» запустит новый сценарий — текущий сбросится. Что делаем?".format(word),
+            reply_markup=kb,
+        )
+        return
+    await start_funnel(message, state, word)
+
+
+async def start_funnel(message: Message, state: FSMContext, word: str):
+    await state.clear()
     await state.update_data(source=word, test=TRIGGERS[word]["test"],
                             q_index=0, score=0)
-    await state.set_state(Funnel.m01_hook)
     await message.answer(TRIGGERS[word]["hook"], reply_markup=remove_kb())
     await state.set_state(Funnel.age)
-    await message.answer("Сколько лет ребёнку? (только цифра, например: 10)")
+    prompt = "Сколько лет ребёнку? (только цифра, например: 10)"
+    await state.update_data(prompt=prompt)
+    await message.answer(prompt)
+
+
+@dp.callback_query(F.data.startswith("restart:"))
+async def cb_restart(callback: CallbackQuery, state: FSMContext):
+    word = callback.data.split(":")[1]
+    if word in TRIGGERS:
+        await callback.message.edit_text(f"🔁 Запускаю «{word}» заново:")
+        await start_funnel(callback.message, state, word)
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "fcontinue")
+async def cb_fcontinue(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    prompt = data.get("prompt")
+    await callback.message.edit_text("Продолжаем 👌")
+    if prompt:
+        await callback.message.answer(prompt)
+    await callback.answer()
 
 
 @dp.message(Funnel.age)
@@ -429,7 +476,9 @@ async def funnel_age(message: Message, state: FSMContext):
     await state.update_data(child_age=age)
     if age >= 12:
         await state.set_state(Funnel.ask_class)
-        await message.answer("В каком классе ребёнок?", reply_markup=class_kb())
+        prompt = "В каком классе ребёнок?"
+        await state.update_data(prompt=prompt)
+        await message.answer(prompt, reply_markup=class_kb())
     else:
         await go_to_content(message, state)
 
@@ -456,8 +505,10 @@ async def send_test_question(message: Message, state: FSMContext):
     test = data["test"]
     idx = data["q_index"]
     header = f"{test['title']}\n\nВопрос {idx + 1} из {len(test['questions'])}:"
+    prompt = f"{test['questions'][idx]}"
+    await state.update_data(prompt=prompt)
     await message.answer(
-        f"{header}\n\n{test['questions'][idx]}",
+        f"{header}\n\n{prompt}",
         reply_markup=test_answer_kb(),
     )
 
@@ -479,15 +530,25 @@ async def funnel_test_answer(callback: CallbackQuery, state: FSMContext):
     for min_score, text in test["result"]:
         if score >= min_score:
             break
-    await callback.message.edit_text(f"🏁 <b>Результат:</b> {score} из {len(test['questions'])}\n\n{text}")
+    max_score = 2 * len(test["questions"])
+    pct = round(score / max_score * 100)
+    await callback.message.edit_text(
+        f"🏁 <b>Ваш результат: {score} баллов из {max_score}</b> ({pct}%)\n\n{text}")
+    await callback.message.answer(
+        "📞 <b>Что дальше:</b> менеджер свяжется с вами в течение 2 часов, "
+        "чтобы согласовать удобное время пробного занятия и ответить на ваши вопросы. "
+        "Это ни к чему не обязывает — вы сможете просто послушать и решить."
+    )
     await ask_call(callback.message, state)
 
 
 # ─── M-СОЗВОН: заявка на звонок менеджера ─────────────────────
 async def ask_call(message: Message, state: FSMContext):
     await state.set_state(Funnel.parent_name)
+    prompt = "Как вас зовут? (имя родителя)"
+    await state.update_data(prompt=prompt)
     await message.answer(
-        "Отлично! Чтобы назначить созвон, представьтесь, пожалуйста.\n\nКак вас зовут? (имя родителя)"
+        "Отлично! Чтобы менеджер мог связаться с вами, представьтесь, пожалуйста.\n\n" + prompt
     )
 
 
@@ -495,10 +556,10 @@ async def ask_call(message: Message, state: FSMContext):
 async def funnel_parent_name(message: Message, state: FSMContext):
     await state.update_data(parent_name=message.text)
     await state.set_state(Funnel.phone)
-    await message.answer(
-        "Приятно познакомиться! Теперь отправьте номер телефона — менеджер перезвонит в течение 2 часов.",
-        reply_markup=share_phone_kb(),
-    )
+    prompt = ("Приятно познакомиться! Теперь отправьте номер телефона — менеджер перезвонит "
+              "в течение 2 часов, чтобы согласовать удобное время и ответить на вопросы.")
+    await state.update_data(prompt=prompt)
+    await message.answer(prompt, reply_markup=share_phone_kb())
 
 
 @dp.message(Funnel.phone, F.contact)
@@ -544,23 +605,35 @@ async def funnel_phone_done(message: Message, state: FSMContext, phone: str):
         reply_markup=main_menu_kb(),
     )
 
-    # Уведомление админам
+    # Уведомление админам (с кнопкой «Созвон состоялся»)
+    notify_text = (
+        f"📥 Заявка на созвон! Точка входа: «{source}»\n\n"
+        f"Родитель: {parent_name}\n"
+        f"Телефон: {phone}\n"
+        f"Ребёнок: {age} лет" + (f", класс {child_class}" if child_class else "") + "\n"
+        f"Telegram: @{message.chat.username or 'нет'}\n"
+        f"ID: {message.chat.id}\n\n"
+        f"⏰ Дедлайн звонка: +2 часа"
+    )
     for admin_id in ADMIN_IDS:
         await bot.send_message(
             admin_id,
-            f"📥 Заявка на созвон! Точка входа: «{source}»\n\n"
-            f"Родитель: {parent_name}\n"
-            f"Телефон: {phone}\n"
-            f"Ребёнок: {age} лет" + (f", класс {child_class}" if child_class else "") + "\n"
-            f"Telegram: @{message.chat.username or 'нет'}\n"
-            f"ID: {message.chat.id}\n\n"
-            f"⏰ Дедлайн звонка: +2 часа",
+            notify_text,
+            reply_markup=admin_call_kb(message.chat.id, parent_name, phone),
         )
 
     # Bitrix: контакт + сделка + задача Вике
     bitrix_create_lead(parent_name, phone, age, child_class, source, message.chat.username)
 
-    # Напоминание M03: если созвон не отмечен через 2 часа — пингануть админа
+    # Напоминание M03: если созвон не отмечен через 2 часа — пингануть админа.
+    # Сначала удаляем неотправленные m03 этого юзера, чтобы дубли не плодились
+    # при повторном прохождении воронки.
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        conn.execute(
+            "DELETE FROM reminders WHERE user_id=? AND kind='m03_admin' AND sent=0",
+            (message.chat.id,),
+        )
+        conn.commit()
     add_reminder(message.chat.id, "m03_admin", datetime.now() + timedelta(hours=2), payload=phone)
 
 
@@ -896,6 +969,35 @@ async def cb_reject(callback: CallbackQuery):
     await callback.answer("Отклонено")
 
 
+# ─── КНОПКА «СОЗВОН СОСТОЯЛСЯ» ─────────────────────────────────
+@dp.callback_query(F.data.startswith("calldone:"))
+async def cb_calldone(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    user_id = int(callback.data.split(":")[1])
+    user = get_user(user_id) or ()
+    name = user[3] if len(user) > 3 else str(user_id)
+    phone = user[4] if len(user) > 4 else "—"
+    update_user(user_id, call_done=1)
+
+    who = callback.from_user.first_name or str(callback.from_user.id)
+    # Редактируем сообщение у нажавшего
+    try:
+        await callback.message.edit_text(
+            callback.message.text + f"\n\n✅ СОЗВОН СОСТОЯЛСЯ — отметил: {who}")
+    except Exception:
+        pass
+    # Уведомляем остальных админов
+    for admin_id in ADMIN_IDS:
+        if admin_id != callback.from_user.id:
+            await bot.send_message(
+                admin_id,
+                f"✅ Созвон отмечен выполненным\n\nРодитель: {name}\nТелефон: {phone}\nОтметил: {who}",
+            )
+    await callback.answer("Отмечено: созвон состоялся")
+
+
 # ─── ADMIN COMMANDS ────────────────────────────────────────────
 @dp.message(Command("probnoe"))
 async def cmd_probnoe(message: Message):
@@ -990,9 +1092,11 @@ async def reminder_worker():
                             await bot.send_message(
                                 admin_id,
                                 f"⏰ Прошло 2 часа, созвон не отмечен!\n\n"
-                                f"Телефон: {user[4]}\nИмя: {user[3]}\n"
+                                f"Телефон: {user[3]}\nИмя: {user[2]}\n"
+                                f"Ребёнок: {user[5]} лет\n"
                                 f"Точка входа: {user[9]}\n"
-                                f"Отметить созвон: /done {user_id}",
+                                f"ID: {user_id}",
+                                reply_markup=admin_call_kb(user_id),
                             )
                     elif kind == "m07_24h":
                         await bot.send_message(
@@ -1053,6 +1157,21 @@ async def health_server():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
     logging.info(f"Health server on port {port}")
+
+
+# ─── ОТВЕТ НА ЛЮБОЙ ДРУГОЙ ТЕКСТ (всегда последним) ───────────
+@dp.message(F.text)
+async def unknown_text(message: Message):
+    await message.answer(
+        "Я бот курсов «Я — Лидер» 😊\n\n"
+        "Напиши одно из кодовых слов — и я начну:\n"
+        "• <b>ЛИДЕР</b> — тест лидерских качеств\n"
+        "• <b>ТЕСТ</b> — тест самостоятельности\n"
+        "• <b>ДИАГНОСТИКА</b> — диагностика от психолога\n"
+        "• <b>ЗАНЯТИЕ</b> — пробное занятие\n\n"
+        "Или нажми /start",
+        reply_markup=main_menu_kb(),
+    )
 
 
 async def main():
